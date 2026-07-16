@@ -3,21 +3,23 @@
 Browser Agent TUI v4
 用法: python agent_tui_v4.py  或  leafcode
 """
-import sys, os, re, asyncio, threading, io, time
+import sys, os, re, asyncio, threading, time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.widgets import Static, Input, Label
+from textual.widgets import Button, Static, Input, Label
 from textual.widget import Widget
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.css.query import NoMatches
-from textual.events import MouseScrollDown, MouseScrollUp, Click
+from textual.events import MouseScrollDown, MouseScrollUp, Click, Resize
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from agent import BrowserAgent, AgentMode
+from leafcode.models import RuntimeEvent, TaskState
 
 def _load_dotenv():
     env_path = Path(__file__).parent / ".env"
@@ -35,6 +37,7 @@ _load_dotenv()
 APP_CSS = """
 Screen { background: #0d1117; }
 
+#status-bar { height: 1; color: #c9d1d9; background: #161b22; padding: 0 1; }
 #loading-bar { height: 1; color: #d29922; background: #161b22; padding: 0 1; }
 #message-area {
     background: #0d1117;
@@ -45,6 +48,8 @@ Screen { background: #0d1117; }
     scrollbar-color-active: #58a6ff;
 }
 #sidebar { width: 30; background: #161b22; border-left: solid #30363d; }
+#command-palette { display: none; dock: top; height: auto; background: #161b22; border: solid #58a6ff; color: #c9d1d9; padding: 1 2; margin: 1 2; }
+#debug-panel { display: none; height: auto; max-height: 12; overflow-y: auto; background: #161b22; color: #8b949e; border-top: solid #30363d; padding: 0 1; }
 
 /* 输入区 */
 #input-section {
@@ -53,6 +58,10 @@ Screen { background: #0d1117; }
     padding: 0 1;
     height: auto;
 }
+#confirmation-actions { display: none; height: 3; padding: 0 1; }
+#confirmation-actions Button { margin: 0 1; min-width: 12; }
+#confirm-yes { background: #238636; }
+#confirm-no { background: #da3633; }
 
 #user-input {
     background: #0d1117;
@@ -87,35 +96,44 @@ ToolPart { color: #79c0ff; padding: 0 2; }
 TextPart { color: #c9d1d9; padding: 0 2; }
 ErrorPart { color: #f85149; padding: 0 2; }
 StatusPart { color: #3fb950; padding: 0 2; }
+ActivityPart { color: #c9d1d9; padding: 0 2; }
+ConfirmationPart { color: #d29922; border: solid #d29922; padding: 1 2; margin: 1 1; }
 Divider { height: 1; color: #30363d; margin: 1 0; }
 """
 
 
 class ThinkingPart(Static):
-    def __init__(self, text: str): super().__init__(f"  💭 {text}")
+    def __init__(self, text: str): super().__init__(f"  THOUGHT: {text}", markup=False)
 class ToolPart(Static):
-    def __init__(self, text: str, icon: str = "▸"): super().__init__(f"  {icon} {text}")
+    def __init__(self, text: str, icon: str = "▸"): super().__init__(f"  {icon} {text}", markup=False)
 class TextPart(Static):
-    def __init__(self, text: str): super().__init__(text)
+    def __init__(self, text: str): super().__init__(text, markup=False)
 class ErrorPart(Static):
-    def __init__(self, text: str): super().__init__(f"  ❌ {text}")
+    def __init__(self, text: str): super().__init__(f"  ERROR: {text}", markup=False)
 class StatusPart(Static):
-    def __init__(self, text: str = "完成"): super().__init__(f"  ✅ {text}")
+    def __init__(self, text: str = "完成"): super().__init__(f"  DONE: {text}", markup=False)
 class Divider(Static):
-    def __init__(self): super().__init__("─" * 50)
+    def __init__(self): super().__init__("─" * 50, markup=False)
+
+class ActivityPart(Static):
+    def __init__(self, text: str): super().__init__(f"  • {text}", markup=False)
+
+class ConfirmationPart(Static):
+    def __init__(self, text: str):
+        super().__init__(f"  CONFIRMATION: {text}\n  输入 /confirm 执行，或 /reject 拒绝", markup=False)
 
 class UserMessage(Static):
     def __init__(self, text: str):
-        super().__init__("\n".join(f"│ {line}" for line in text.split("\n")))
+        super().__init__("\n".join(f"│ {line}" for line in text.split("\n")), markup=False)
 
 class AgentMessage(Vertical):
     def add_part(self, w: Widget): self.mount(w)
 
 class Sidebar(Widget):
     def compose(self) -> ComposeResult:
-        yield Static("  📂 会话 (TODO)")
-        yield Static("  ──────────")
-        yield Static("  (预留)")
+        yield Static("  SESSION", id="sidebar-title", markup=False)
+        yield Static("  ──────────", markup=False)
+        yield Static("  暂无活动会话", id="sidebar-content", markup=False)
 
 
 class PartFactory:
@@ -130,6 +148,14 @@ class PartFactory:
     def _process_line(self, line: str):
         line = line.strip()
         if not line: return
+        if line.startswith("THOUGHT:"):
+            self.parts.append(ThinkingPart(line.removeprefix("THOUGHT:").strip())); return
+        if line.startswith("ACTION:"):
+            self.parts.append(ToolPart(line)); return
+        if line.startswith("ERROR:"):
+            self.parts.append(ErrorPart(line.removeprefix("ERROR:").strip())); return
+        if line.startswith("OK:") or line.startswith("CONFIRMED:"):
+            self.parts.append(StatusPart(line)); return
         if line.startswith("===") or line.startswith("──"): return
         if line.startswith("🎯"): self.parts.append(ToolPart(line, icon="🎯")); return
         if line.startswith("📝"): self.parts.append(TextPart(line)); return
@@ -149,12 +175,6 @@ class PartFactory:
         self.parts.append(TextPart(line))
 
 
-class _FactoryStream(io.TextIOBase):
-    def __init__(self, f): self.f = f
-    def write(self, s: str): self.f.feed(s)
-    def flush(self): self.f.flush()
-
-
 class BrowserAgentApp(App):
     CSS = APP_CSS
     BINDINGS = [
@@ -162,6 +182,7 @@ class BrowserAgentApp(App):
         Binding("ctrl+t", "switch_mode", "切换模式"),
         Binding("ctrl+b", "toggle_sidebar", "侧边栏"),
         Binding("ctrl+p", "command_palette", "命令面板"),
+        Binding("f2", "toggle_debug", "调试信息", show=False),
         Binding("pageup", "scroll_page_up", "上翻页", show=False),
         Binding("pagedown", "scroll_page_down", "下翻页", show=False),
         Binding("home", "scroll_home", "跳到顶", show=False),
@@ -174,25 +195,40 @@ class BrowserAgentApp(App):
     auto_scroll = reactive(True)
     loading = reactive(False)
     sidebar_visible = reactive(False)
+    palette_visible = reactive(False)
+    debug_visible = reactive(False)
+    confirmation_visible = reactive(False)
+    task_status = reactive("idle")
+    current_url = reactive("")
+    step_label = reactive("-")
+    task_started_at: float | None = None
 
     def __init__(self):
         super().__init__()
         self.agent: BrowserAgent | None = None
-        self.agent_thread: threading.Thread | None = None
+        # 所有 Playwright 调用固定在同一个工作线程，避免跨线程访问页面对象。
+        self.agent_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="leafcode-browser")
+        self.agent_future: Future | None = None
         self._pending_factory: PartFactory | None = None
         self._esc_times: list = []
 
     def compose(self) -> ComposeResult:
+        yield Label("  idle · 未连接浏览器 · 步骤 -", id="status-bar")
         yield Label("", id="loading-bar")
+        yield Static("命令面板\n/new 新任务  /stop 停止  /retry 重试  /continue 继续\n/confirm 确认  /reject 拒绝  /tabs 标签页  /mode 模式\n/clear 清屏  /help 帮助", id="command-palette", markup=False)
         with Horizontal():
             with VerticalScroll(id="message-area"): pass
             yield Sidebar(id="sidebar")
         with Container(id="input-section"):
-            yield Input(placeholder="输入任务... Enter 提交", id="user-input")
+            yield Input(placeholder="单行输入任务… Enter 提交（多行暂不支持）", id="user-input")
+            with Horizontal(id="confirmation-actions"):
+                yield Button("Yes，执行操作", id="confirm-yes", variant="success")
+                yield Button("No，拒绝操作", id="confirm-no", variant="error")
             with Horizontal(id="mode-row"):
-                yield Static("  INFORM  ", id="mode-label", classes="mode-inform")
-                yield Static("  Ctrl+T 切换模式  ", id="mode-hint")
-        yield Static("", id="bottom-pad")
+                yield Static("  INFORM  ", id="mode-label", classes="mode-inform", markup=False)
+                yield Static("  Ctrl+T 切换模式  ", id="mode-hint", markup=False)
+        yield Static("调试信息将在任务执行时显示。按 F2 展开或收起。", id="debug-panel", markup=False)
+        yield Static("", id="bottom-pad", markup=False)
 
     def watch_mode(self, old, new):
         try:
@@ -206,12 +242,59 @@ class BrowserAgentApp(App):
         self.notify(f"切换 → {new.value}", timeout=1.0)
 
     def watch_loading(self, loading: bool):
-        try: self.query_one("#loading-bar", Label).update("  ⏳ Preparing..." if loading else "")
+        try: self.query_one("#loading-bar", Label).update("  Preparing..." if loading else "")
         except NoMatches: pass
+
+    def _refresh_chrome(self):
+        try:
+            domain = self.current_url.split("/")[2] if "://" in self.current_url else (self.current_url or "未连接浏览器")
+            elapsed = f"{int(time.time() - self.task_started_at)}s" if self.task_started_at else "0s"
+            self.query_one("#status-bar", Label).update(
+                f"  {self.task_status} · {self.mode.value} · {domain} · {elapsed} · 步骤 {self.step_label}/10")
+            self.query_one("#sidebar-content", Static).update(
+                f"  状态: {self.task_status}\n  页面: {domain}\n  步骤: {self.step_label}\n\n  命令\n  /confirm  /reject\n  /continue /retry")
+        except NoMatches: pass
+
+    def _handle_runtime_event(self, event: RuntimeEvent):
+        self.step_label = str(event.data.get("step", self.step_label))
+        self.current_url = event.data.get("url", self.current_url)
+        if event.kind == "confirmation":
+            self.task_status = "awaiting confirmation"
+            self.confirmation_visible = True
+            self._mount(ConfirmationPart(event.message))
+        else:
+            self.task_status = "failed" if event.kind == "error" else ("running" if event.kind in {"plan", "action", "thought"} else event.kind)
+            self._mount(ActivityPart(event.message))
+            if event.kind == "action":
+                self._mount(Divider())
+        self._refresh_chrome()
+        try:
+            details = event.data.get("params") or event.data
+            self.query_one("#debug-panel", Static).update(f"[{event.kind}] {event.message}\n{details}")
+        except NoMatches: pass
+        self._scroll_end()
 
     def watch_sidebar_visible(self, old, new):
         try: self.query_one("#sidebar", Sidebar).display = new
         except NoMatches: pass
+
+    def watch_palette_visible(self, old, new):
+        try: self.query_one("#command-palette", Static).display = new
+        except NoMatches: pass
+
+    def watch_debug_visible(self, old, new):
+        try: self.query_one("#debug-panel", Static).display = new
+        except NoMatches: pass
+
+    def watch_confirmation_visible(self, old, new):
+        try:
+            self.query_one("#confirmation-actions", Horizontal).display = new
+            self.query_one("#user-input", Input).display = not new
+        except NoMatches: pass
+
+    def on_resize(self, event: Resize):
+        if event.size.width < 100:
+            self.sidebar_visible = False
 
     # ── 工具方法 ──
 
@@ -253,7 +336,10 @@ class BrowserAgentApp(App):
         self.sidebar_visible = not self.sidebar_visible
 
     def action_command_palette(self):
-        self.notify("命令面板 (预留)", title="TODO", severity="information")
+        self.palette_visible = not self.palette_visible
+
+    def action_toggle_debug(self):
+        self.debug_visible = not self.debug_visible
 
     def action_scroll_page_up(self):
         self.auto_scroll = False
@@ -306,6 +392,24 @@ class BrowserAgentApp(App):
     def on_mode_click(self, event: Click):
         self.action_switch_mode()
 
+    @on(Button.Pressed, "#confirm-yes")
+    def on_confirm_yes(self, event: Button.Pressed):
+        self._submit_confirmation(True)
+
+    @on(Button.Pressed, "#confirm-no")
+    def on_confirm_no(self, event: Button.Pressed):
+        self._submit_confirmation(False)
+
+    def _submit_confirmation(self, approved: bool):
+        if not self.agent:
+            return
+        message = self.agent.submit_confirmation(approved)
+        self.confirmation_visible = False
+        self.task_status = "running" if approved else "cancelling"
+        self._refresh_chrome()
+        self._mount(ActivityPart(message))
+        self._scroll_end()
+
     # ── 输入提交 ──
 
     @on(Input.Submitted, "#user-input")
@@ -317,14 +421,49 @@ class BrowserAgentApp(App):
 
         self._mount(UserMessage(text))
         self._mount(Divider())
+        command = text.lower()
+
+        if command == "/clear":
+            self.action_clear_messages(); return
+        if command == "/new":
+            self.task_status, self.current_url, self.step_label = "idle", "", "-"
+            self._refresh_chrome(); self._mount(StatusPart("已创建新任务上下文")); return
+        if command == "/mode":
+            self.action_switch_mode(); self._refresh_chrome(); return
+        if command == "/help":
+            self._mount(ActivityPart("命令: /new /stop /retry /continue /confirm /reject /tabs /mode /clear /help")); return
+        if command == "/tabs":
+            pages = self.agent.session.context.pages if self.agent and self.agent.session and self.agent.session.context else []
+            self._mount(ActivityPart("标签页: " + (" | ".join(page.url for page in pages) if pages else "无"))); return
+        if command == "/stop":
+            if self.agent: self.agent.abort = True
+            self.task_status = "cancelling"; self._refresh_chrome()
+            self._mount(ActivityPart("已请求停止当前任务。")); return
 
         if text.lower() == "home":
             self._mount(StatusPart("Agent 已退出"))
             self._mount(Divider())
             self._scroll_end(); return
 
-        if self.agent_thread and self.agent_thread.is_alive():
-            self._mount(TextPart("  ⏳ 上一个任务执行中")); self._scroll_end(); return
+        if not self.agent:
+            self._mount(ErrorPart("未配置 DEEPSEEK_API_KEY；请在 .env 中配置后重新启动。"))
+            self._scroll_end(); return
+
+        if command in {"/confirm", "/reject"}:
+            self._submit_confirmation(command == "/confirm")
+            return
+
+        if self.loading:
+            self._mount(TextPart("  上一个任务执行中")); self._scroll_end(); return
+
+        if command in {"/continue", "/retry"}:
+            self.task_status = "running"
+            self._refresh_chrome()
+            factory = PartFactory()
+            self._pending_factory = factory
+            self.loading = True
+            self.agent_future = self.agent_executor.submit(self._run_control, command, factory)
+            self._scroll_end(); return
 
         auto_headless, clean_task = BrowserAgent.detect_mode(text)
         actual_task = clean_task if auto_headless else text
@@ -334,17 +473,30 @@ class BrowserAgentApp(App):
         factory = PartFactory()
         self._pending_factory = factory
         self.loading = True
-        self.agent_thread = threading.Thread(
-            target=self._run_agent, args=(actual_task, factory), daemon=True)
-        self.agent_thread.start()
+        self.task_status = "planning"
+        self.step_label = "0"
+        self.task_started_at = time.time()
+        self._refresh_chrome()
+        self.agent_future = self.agent_executor.submit(self._run_agent, actual_task, factory)
         self._scroll_end()
 
     def _run_agent(self, task: str, factory: PartFactory):
-        old = sys.stdout
-        sys.stdout = _FactoryStream(factory)
-        try: self.agent.run(task, mode=self.mode)
-        except Exception as e: factory.feed(f"\n❌ {e}")
-        finally: sys.stdout = old; factory.flush()
+        try:
+            # TUI 只渲染结构化事件，避免与终端文本流重复显示。
+            self.agent.on_output = lambda _text: None
+            self.agent.on_event = lambda event: self.call_from_thread(self._handle_runtime_event, event)
+            self.agent.run(task, mode=self.mode)
+        except Exception as e: factory.feed(f"\nERROR: {e}")
+        finally: factory.flush()
+
+    def _run_control(self, command: str, factory: PartFactory):
+        self.agent.on_output = lambda _text: None
+        self.agent.on_event = lambda event: self.call_from_thread(self._handle_runtime_event, event)
+        try:
+            result = self.agent.continue_task(retry=command == "/retry")
+            factory.feed(f"{result}\n")
+        except Exception as e: factory.feed(f"\nERROR: {e}")
+        finally: factory.flush()
 
     def on_mount(self):
         self.set_interval(0.3, self._tick)
@@ -353,20 +505,45 @@ class BrowserAgentApp(App):
         try:
             self.query_one("#sidebar", Sidebar).display = False
             self.query_one("#user-input", Input).focus()
+            self._refresh_chrome()
         except NoMatches: pass
 
+    def on_unmount(self):
+        if self.agent:
+            self.agent.abort = True
+            self.agent.submit_confirmation(False)
+            self.agent_executor.submit(self.agent.close)
+        self.agent_executor.shutdown(wait=False, cancel_futures=False)
+
     def _tick(self):
+        if self.loading:
+            self._refresh_chrome()
         if not self._pending_factory: return
         parts = self._pending_factory.parts
         if parts:
             batch = parts[:]; parts.clear()
             for pw in batch: self._mount(pw)
             self._scroll_end()
-        if self.agent_thread and not self.agent_thread.is_alive():
-            self.agent_thread = None; self._pending_factory = None; self.loading = False
+        if self.agent_future and self.agent_future.done():
+            self.agent_future = None; self._pending_factory = None; self.loading = False
+            if self.agent and self.agent.task_context:
+                self.task_status = self.agent.task_context.state.value
+                if self.agent.task_context.latest_snapshot:
+                    self.current_url = self.agent.task_context.latest_snapshot.url
+                self.step_label = str(self.agent.task_context.current_step or self.step_label)
+                self._refresh_chrome()
             self._mount(Divider())
-            status = "完成 (浏览器已保留)" if self.mode == AgentMode.OPERATE else "完成"
-            self._mount(StatusPart(status))
+            state = self.agent.task_context.state if self.agent and self.agent.task_context else None
+            if state == TaskState.COMPLETED:
+                status = "完成 (浏览器已保留)" if self.mode == AgentMode.OPERATE else "完成"
+                self._mount(StatusPart(status))
+            elif state == TaskState.AWAITING_CONFIRMATION:
+                self._mount(ConfirmationPart("任务暂停，等待你的确认。"))
+            elif state == TaskState.CANCELLED:
+                self._mount(StatusPart("任务已取消"))
+            else:
+                detail = self.agent.task_context.error if self.agent and self.agent.task_context else "任务未完成"
+                self._mount(ErrorPart(f"任务失败：{detail}"))
             self.auto_scroll = True; self._scroll_end()
 
 

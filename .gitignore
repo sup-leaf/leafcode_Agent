@@ -18,3 +18,12 @@ Thumbs.db
 # 临时文件
 *.log
 *.tmp
+
+# 运行时事件日志（可能包含任务内容）
+logs/
+
+# 本地错误现场与诊断日志（可能包含页面或任务上下文）
+docs/error/
+
+# 本地编写规范文档
+docs/CODING_CONVENTIONS.md
