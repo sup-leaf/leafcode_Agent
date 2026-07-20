@@ -19,14 +19,30 @@ class EventLogger:
         self.path = self.log_dir / f"agent-{timestamp}.jsonl"
         self._secret_values = [
             value for key, value in os.environ.items()
-            if value and any(marker in key.upper() for marker in ("KEY", "TOKEN", "SECRET", "PASS"))
+            if value
+            and any(
+                marker in key.upper()
+                for marker in ("KEY", "TOKEN", "SECRET", "PASS")
+            )
         ]
 
     def _redact(self, value: Any) -> Any:
         if isinstance(value, dict):
-            sensitive = ("KEY", "TOKEN", "SECRET", "PASS", "PASSWORD", "CREDENTIAL", "AUTH")
+            sensitive = (
+                "KEY",
+                "TOKEN",
+                "SECRET",
+                "PASS",
+                "PASSWORD",
+                "CREDENTIAL",
+                "AUTH",
+            )
             return {
-                str(key): "[REDACTED]" if any(marker in str(key).upper() for marker in sensitive) else self._redact(item)
+                str(key): (
+                    "[REDACTED]"
+                    if any(marker in str(key).upper() for marker in sensitive)
+                    else self._redact(item)
+                )
                 for key, item in value.items()
             }
         if isinstance(value, list):

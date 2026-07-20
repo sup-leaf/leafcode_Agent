@@ -4,7 +4,7 @@
 
 v0.3 的目标是交付一个**可连续使用、执行过程可解释且安全可控**的浏览器 Agent。重点是让 Agent 在同一浏览器会话中稳定完成检索和网页操作，而不是扩充更多站点或堆叠更多 UI 功能。
 
-对应设计说明见 [AGENT_DEVELOPMENT_AND_PLAN.md](AGENT_DEVELOPMENT_AND_PLAN.md)，模块边界见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+对应设计说明见 [AGENT_DEVELOPMENT_AND_PLAN.md](AGENT_DEVELOPMENT_AND_PLAN.md)，模块边界见 [ARCHITECTURE.md](ARCHITECTURE.md)，逐文件代码讲解见 [CODE_WALKTHROUGH.md](CODE_WALKTHROUGH.md)，当前功能缺口和 v0.4 候选需求见 [FUNCTIONAL_REVIEW_AND_V04_RESEARCH.md](FUNCTIONAL_REVIEW_AND_V04_RESEARCH.md)。
 
 ## 当前状态（2026-07-16）
 

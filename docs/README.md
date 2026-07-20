@@ -6,8 +6,9 @@
 | --- | --- |
 | [v0.2](v0.2/) | 历史架构与路线图 |
 | [v0.3](v0.3/) | 当前开发阶段的设计、实施、重构与验收资料 |
+| [v0.4](v0.4/) | 下一阶段的代码质量与迭代资料 |
 
-v0.3 文档入口：[实施计划](v0.3/IMPLEMENTATION_PLAN.md)、[架构](v0.3/ARCHITECTURE.md)、[重构记录](v0.3/REFACTORING.md)、[测试用例](v0.3/TEST_CASES.md) 和 [设计背景](v0.3/AGENT_DEVELOPMENT_AND_PLAN.md)。
+v0.3 文档入口：[实施计划](v0.3/IMPLEMENTATION_PLAN.md)、[架构](v0.3/ARCHITECTURE.md)、[重构记录](v0.3/REFACTORING.md)、[测试用例](v0.3/TEST_CASES.md)、[设计背景](v0.3/AGENT_DEVELOPMENT_AND_PLAN.md)、[源码导读](v0.3/CODE_WALKTHROUGH.md) 和 [功能审查与 v0.4 研究](v0.3/FUNCTIONAL_REVIEW_AND_V04_RESEARCH.md)。
 
 全项目编写要求见：[编写规范](CODING_CONVENTIONS.md)。
 

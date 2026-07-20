@@ -27,3 +27,6 @@ docs/error/
 
 # 本地编写规范文档
 docs/CODING_CONVENTIONS.md
+
+# 开发者本地源码导读
+docs/v0.3/CODE_WALKTHROUGH.md
